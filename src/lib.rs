@@ -19,7 +19,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use handl_ext::{ExtRequest, ExtResponse, ExtensionManifest};
-use handl_kit_canonical::Kit;
+use handl_kit_prelude::Kit;
 use handl_language::Language;
 use handl_platform::{CapabilityRequest, DefaultHost, PlatformError};
 use handl_plugin_ext_detect::{Dialect, detect_dialect};
@@ -97,7 +97,7 @@ fn load_prelude(path: &str) -> Result<HashSet<String>, String> {
 }
 
 fn load_canonical_language() -> Result<Language, String> {
-    Ok(handl_kit_data_canonical::assemble()
+    Ok(handl_kit_data_prelude::assemble()
         .map_err(|e| format!("failed to assemble canonical language: {e}"))?
         .lang()
         .clone())
@@ -107,7 +107,7 @@ fn load_canonical_language() -> Result<Language, String> {
 /// the canonical kit's module chain supplies at eval time (ADR-0096).
 fn typecheck_wire_prelude() -> &'static HashSet<String> {
     static PRELUDE: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
-    PRELUDE.get_or_init(handl_kit_canonical::canonical_wire_names)
+    PRELUDE.get_or_init(handl_kit_prelude::prelude_wire_names)
 }
 
 /// Run the `lint` command, resolving relative paths against `cwd`.
