@@ -19,6 +19,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use handl_ext::{ExtRequest, ExtResponse, ExtensionManifest};
+use handl_kit_pkg::KitProjectExt;
 use handl_kit_prelude::Kit;
 use handl_language::Language;
 use handl_platform::{CapabilityRequest, DefaultHost, PlatformError};

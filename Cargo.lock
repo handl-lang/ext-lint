@@ -430,6 +430,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "handl-kit-pkg"
+version = "0.1.0"
+dependencies = [
+ "handl-kit-data-prelude",
+ "handl-kit-prelude",
+ "handl-language",
+ "handl-platform",
+]
+
+[[package]]
 name = "handl-kit-prelude"
 version = "0.1.0"
 dependencies = [
@@ -1380,6 +1390,7 @@ version = "0.1.0"
 dependencies = [
  "handl-ext",
  "handl-kit-data-prelude",
+ "handl-kit-pkg",
  "handl-kit-prelude",
  "handl-language",
  "handl-platform",
@@ -2383,7 +2394,3 @@ version = "0.0.0"
 [[patch.unused]]
 name = "sepia-testkit"
 version = "0.0.0"
-
-[[patch.unused]]
-name = "handl-kit-pkg"
-version = "0.1.0"
