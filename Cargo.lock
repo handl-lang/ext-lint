@@ -487,7 +487,6 @@ dependencies = [
 [[package]]
 name = "handl-kit-prelude-lang"
 version = "0.1.0"
-source = "git+https://github.com/handl-lang/kit-prelude-lang?branch=main#b5db5479ab152497391221200c27a26f82c9aa8e"
 dependencies = [
  "handl-language",
  "handl-plugin-ext-diag",
