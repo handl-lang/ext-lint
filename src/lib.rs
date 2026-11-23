@@ -10,8 +10,9 @@
 //!
 //! Internally the extension is a *host of plugins* like any other
 //! (ADR-0149 §Consequences): a `DefaultHost` running the `lint` capability of
-//! [`LintPlugin`], with the canonical kit's language + `.hnl`-rule resolver
-//! injected (ADR-0128 §"The 0.8 seam").
+//! `handl_plugin_ext_lint::LintPlugin` (for stdin `--fix`; file `--fix`
+//! goes straight to `fix_file_with_prelude`), with the canonical kit's
+//! language + `.hnl`-rule resolver injected (ADR-0128 §"The 0.8 seam").
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -25,6 +26,7 @@ use handl_language::Language;
 use handl_platform::{CapabilityRequest, DefaultHost, PlatformError};
 use handl_plugin_ext_detect::{Dialect, detect_dialect};
 use handl_plugin_ext_diag::{Diagnostic, Severity, render_diagnostics};
+use handl_plugin_ext_lint::LintContext;
 use serde_json::json;
 
 handl_ext::export!(
@@ -190,6 +192,26 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
         Err(e) => return err(format!("lint: tooling host unavailable: {e}\n")),
     };
 
+    // `--fix` runs through the codemod byte-edit path (PL-004 T-091):
+    // `handl_plugin_ext_lint::fix_file_with_prelude` turns each
+    // fixpoint round's `FixHit`s into `ByteEdit`s, plans them through
+    // `CodemodEngine::plan_byte_edits`, and applies via
+    // `Engine::apply` — journaled under `.handl/codegen/` and
+    // revertable. Built once per command; the language override
+    // (`--language`/`--prelude`) rides on `for_language` exactly like
+    // the capability payload's `language` field (ADR-0124).
+    let fix_ctx = if fix {
+        let mut ctx = with_tooling_kit(|kit| {
+            LintContext::with_resolver(kit.language().clone(), kit.handl_lint_adapter().resolver())
+        });
+        if let Some(l) = &lang {
+            ctx = ctx.for_language(l.clone());
+        }
+        Some(ctx)
+    } else {
+        None
+    };
+
     let mut out = Out::default();
 
     if paths.is_empty() {
@@ -197,11 +219,14 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
         if std::io::stdin().read_to_string(&mut src).is_err() {
             return err("lint: failed to read stdin\n");
         }
+        // Stdin has no artifact — the fixed source goes to stdout
+        // (there is nothing to journal).
+        let fix_req = fix_ctx.as_ref().map(|ctx| FixRequest { ctx, target: None });
         let code = lint_one(
             &mut host,
             &src,
             "<stdin>",
-            fix,
+            fix_req.as_ref(),
             fail_on_warn,
             &mut out,
             &prelude,
@@ -231,11 +256,21 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
                 };
             }
         };
+        // The codemod byte-edit target: `FsStore` root + artifact ref —
+        // cwd when the file lives beneath it (journal at
+        // `<cwd>/.handl/codegen/`), else the file's own directory.
+        let fix_req = fix_ctx.as_ref().map(|ctx| {
+            let (root, artifact) = store_location(cwd, &disk);
+            FixRequest {
+                ctx,
+                target: Some((root, artifact)),
+            }
+        });
         let code = lint_one(
             &mut host,
             &src,
             path,
-            fix,
+            fix_req.as_ref(),
             fail_on_warn,
             &mut out,
             &prelude,
@@ -283,13 +318,38 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// Write `content` to `target` atomically (temp file + rename).
-fn write_atomic(target: &Path, content: &str) -> std::io::Result<()> {
-    let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(format!(".hnl-fmt-tmp-{}", std::process::id()));
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, target)?;
-    Ok(())
+/// The `FsStore` root + artifact ref for `disk` under `cwd`: the cwd
+/// when the file lives beneath it — so `fix_file`'s journal/manifest
+/// land at `<cwd>/.handl/codegen/`, the bookkeeping root `hnl codemod`
+/// uses — else the file's own directory (the artifact ref must be
+/// store-relative).
+fn store_location(cwd: &Path, disk: &Path) -> (PathBuf, String) {
+    let canon_disk = disk.canonicalize().unwrap_or_else(|_| disk.to_path_buf());
+    let canon_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if let Ok(rel) = canon_disk.strip_prefix(&canon_cwd)
+        && !rel.as_os_str().is_empty()
+    {
+        return (cwd.to_path_buf(), rel.to_string_lossy().replace('\\', "/"));
+    }
+    let name = disk
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    (
+        disk.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| cwd.to_path_buf()),
+        name,
+    )
+}
+
+/// The `--fix` request for one file: the lint context plus the codemod
+/// byte-edit target — `Some((store_root, artifact))` for on-disk paths
+/// (journaled `Engine::apply` under `<root>/.handl/codegen/`), `None`
+/// for stdin (fixed source goes to stdout; there is no artifact).
+struct FixRequest<'a> {
+    ctx: &'a LintContext,
+    target: Option<(PathBuf, String)>,
 }
 
 /// Lint a single source. Returns 2 on parse error; sets `out.had_failure`
@@ -299,7 +359,7 @@ fn lint_one(
     host: &mut DefaultHost,
     src: &str,
     path: &str,
-    fix: bool,
+    fix: Option<&FixRequest<'_>>,
     fail_on_warn: bool,
     out: &mut Out,
     prelude: &HashSet<String>,
@@ -320,12 +380,12 @@ fn lint_one(
     let deps = handl_platform::discover_dependencies(Path::new(path)).unwrap_or_default();
     let mut seeded = prelude.clone();
     seeded.extend(spliced_import_names(src, &bases, &deps));
-    let prelude: Vec<String> = seeded.into_iter().collect();
+    let prelude_names: Vec<String> = seeded.iter().cloned().collect();
 
     // Same capability path a third-party consumer uses (ADR-0085 step 4). The
     // caller's `language` rides in the payload (ADR-0124) so a capability lint
     // matches a direct call.
-    let mut payload = json!({ "source": src, "prelude": prelude });
+    let mut payload = json!({ "source": src, "prelude": prelude_names });
     if let Some(l) = lang_json {
         payload["language"] = l.clone();
     }
@@ -376,36 +436,51 @@ fn lint_one(
         out.had_failure = true;
     }
 
-    if fix {
-        // `fix` runs through the plugin's injected lint context — see
-        // LintPlugin.
-        let fix_request = CapabilityRequest {
-            capability: "lint".into(),
-            payload: json!({ "source": src, "fix": true, "prelude": prelude }),
-        };
-        match host.run(&fix_request) {
-            Ok(r) if r.0.get("status").and_then(|v| v.as_str()) == Some("fixed") => {
-                let fixed =
-                    r.0.get("output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                if let Err(e) = write_atomic(Path::new(path), fixed) {
-                    out.stderr
-                        .push_str(&format!("lint: failed to write {path}: {e}\n"));
+    if let Some(fx) = fix {
+        match &fx.target {
+            // File path: the codemod byte-edit path — each fixpoint
+            // round's `FixHit`s become `ByteEdit`s planned through
+            // `CodemodEngine::plan_byte_edits` and applied via
+            // `Engine::apply`, journaled under
+            // `<root>/.handl/codegen/` and revertable (PL-004 T-091).
+            // Replaces the old capability `fix` + `write_atomic`.
+            Some((root, artifact)) => {
+                if let Err(e) =
+                    handl_plugin_ext_lint::fix_file_with_prelude(fx.ctx, root, artifact, &seeded)
+                {
+                    out.stderr.push_str(&format!("{path}: {e}\n"));
                     return 2;
                 }
             }
-            Ok(r) => {
-                let msg =
-                    r.0.get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("fix failed");
-                out.stderr.push_str(&format!("{path}: fix error: {msg}\n"));
-                return 2;
-            }
-            Err(e) => {
-                out.stderr.push_str(&format!("lint: {path}: {e}\n"));
-                return 2;
+            // Stdin: no artifact exists to journal — emit the fixed
+            // source on stdout through the same capability the file
+            // path used before (in-memory fixpoint only).
+            None => {
+                let fix_request = CapabilityRequest {
+                    capability: "lint".into(),
+                    payload: json!({ "source": src, "fix": true, "prelude": prelude_names.clone() }),
+                };
+                match host.run(&fix_request) {
+                    Ok(r) if r.0.get("status").and_then(|v| v.as_str()) == Some("fixed") => {
+                        let fixed =
+                            r.0.get("output")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                        out.stdout.push_str(fixed);
+                    }
+                    Ok(r) => {
+                        let msg =
+                            r.0.get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("fix failed");
+                        out.stderr.push_str(&format!("{path}: fix error: {msg}\n"));
+                        return 2;
+                    }
+                    Err(e) => {
+                        out.stderr.push_str(&format!("lint: {path}: {e}\n"));
+                        return 2;
+                    }
+                }
             }
         }
     }
@@ -647,6 +722,30 @@ mod tests {
         let res = run(&["nope.hnl".into()], &dir);
         assert_eq!(res.code, 2);
         assert!(res.stderr.contains("lint: failed to read"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--fix` on a file goes through `fix_file_with_prelude` — the
+    /// codemod byte-edit path journaled under `.handl/codegen/`
+    /// (PL-004), not the old capability + `write_atomic`.
+    #[test]
+    fn fix_rewrites_the_file_journaled() {
+        let dir = tmpdir("fix");
+        let file = dir.join("dirty.hnl");
+        std::fs::write(&file, "x = (1)\n").unwrap();
+        let res = run(&["--fix".into(), "dirty.hnl".into()], &dir);
+        assert_eq!(res.code, 0, "stderr: {}", res.stderr);
+        let fixed = std::fs::read_to_string(&file).unwrap();
+        assert_ne!(fixed, "x = (1)\n", "expected a fix round to apply");
+        assert!(
+            dir.join(".handl/codegen/journal").exists()
+                || dir
+                    .join(".handl/codegen")
+                    .read_dir()
+                    .is_ok_and(|mut d| d.next().is_some()),
+            "expected .handl/codegen bookkeeping under {}",
+            dir.display()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
