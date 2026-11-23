@@ -7,7 +7,7 @@
 
 [[repos]]
 name = "handl-lang/ext-lint"
-dir = "/home/luis/GitHub/handl-lang/ext-lint"
+dir = "~/GitHub/handl-lang/ext-lint"
 branch = "refs/heads/main"
   [repos.runner]
   kind = "script"
