@@ -1,7 +1,7 @@
 //! `hnl-ext-lint` — the `lint` extension for `hnl` (ADR-0149).
 //!
 //! The linter logic lives in `handl-plugin-ext-lint` (capability adapter over
-//! the data-driven `LintEngine` in `hnl-engine-lint`, ADR-0097); this crate
+//! the data-driven `LintEngine` in `hnl-tool-lint`, ADR-0097); this crate
 //! is the *packaging*: it exports the ADR-0149 ABI (`handl_ext_manifest` /
 //! `handl_ext_dispatch` / `handl_ext_free`) and implements the
 //! `hnl lint [--fix] [--fail-on-warn] [--prelude <path>] [--language <name>]
