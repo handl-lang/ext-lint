@@ -147,12 +147,12 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
         i += 1;
     }
 
-    if let Some(ref lang) = language {
-        if lang != "canonical" {
-            return err(
-                "custom languages are not yet supported by the CLI; use the programmatic `_with_language` APIs\n",
-            );
-        }
+    if let Some(ref lang) = language
+        && lang != "canonical"
+    {
+        return err(
+            "custom languages are not yet supported by the CLI; use the programmatic `_with_language` APIs\n",
+        );
     }
 
     let use_with_language = prelude_path.is_some() || language.is_some();
@@ -256,16 +256,17 @@ fn run(args: &[String], cwd: &Path) -> ExtResponse {
 /// A host with the `lint` plugin registered — the extension consumes the
 /// same `DefaultHost`/`CapabilityRequest` machinery the built-in command
 /// did; only the packaging changed (ADR-0149 §Consequences).
+#[allow(clippy::result_large_err)]
 fn tooling_host() -> Result<DefaultHost, PlatformError> {
     let mut host = DefaultHost::new();
-    host.register_plugin(handl_plugin_ext_lint::LintPlugin::new(
-        with_tooling_kit(|kit| {
+    host.register_plugin(handl_plugin_ext_lint::LintPlugin::new(with_tooling_kit(
+        |kit| {
             handl_plugin_ext_lint::LintContext::with_resolver(
                 kit.language().clone(),
                 kit.handl_lint_adapter().resolver(),
             )
-        }),
-    ));
+        },
+    )));
     host.load()?;
     host.resolve_composition()
         .map_err(|e| PlatformError::Plugin(format!("tooling composition: {e}")))?;
@@ -293,6 +294,7 @@ fn write_atomic(target: &Path, content: &str) -> std::io::Result<()> {
 
 /// Lint a single source. Returns 2 on parse error; sets `out.had_failure`
 /// for Error diagnostics (or Warning when `fail_on_warn`).
+#[allow(clippy::too_many_arguments)]
 fn lint_one(
     host: &mut DefaultHost,
     src: &str,
@@ -356,8 +358,9 @@ fn lint_one(
             return 2;
         }
         other => {
-            out.stderr
-                .push_str(&format!("lint: {path}: unexpected capability status {other:?}\n"));
+            out.stderr.push_str(&format!(
+                "lint: {path}: unexpected capability status {other:?}\n"
+            ));
             return 2;
         }
     };
@@ -382,11 +385,10 @@ fn lint_one(
         };
         match host.run(&fix_request) {
             Ok(r) if r.0.get("status").and_then(|v| v.as_str()) == Some("fixed") => {
-                let fixed = r
-                    .0
-                    .get("output")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+                let fixed =
+                    r.0.get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                 if let Err(e) = write_atomic(Path::new(path), fixed) {
                     out.stderr
                         .push_str(&format!("lint: failed to write {path}: {e}\n"));
@@ -394,11 +396,10 @@ fn lint_one(
                 }
             }
             Ok(r) => {
-                let msg = r
-                    .0
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("fix failed");
+                let msg =
+                    r.0.get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("fix failed");
                 out.stderr.push_str(&format!("{path}: fix error: {msg}\n"));
                 return 2;
             }
@@ -426,15 +427,15 @@ fn spec_resolution_bases(path: &Path, module_root: Option<&Path>) -> Vec<PathBuf
         Some(dir) if !dir.as_os_str().is_empty() => bases.push(dir.to_path_buf()),
         _ => bases.push(PathBuf::from(".")),
     }
-    if let Some(root) = module_root {
-        if !bases.iter().any(|b| b.as_path() == root) {
-            bases.push(root.to_path_buf());
-        }
+    if let Some(root) = module_root
+        && !bases.iter().any(|b| b.as_path() == root)
+    {
+        bases.push(root.to_path_buf());
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        if !bases.iter().any(|b| *b == cwd) {
-            bases.push(cwd);
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && !bases.contains(&cwd)
+    {
+        bases.push(cwd);
     }
     bases
 }
@@ -470,8 +471,11 @@ fn resolve_spec_path(
     if Path::new(spec).is_absolute() {
         return file_candidate(Path::new(spec), spec);
     }
-    resolve_dep_spec_path(spec, deps)
-        .or_else(|| bases.iter().find_map(|base| file_candidate(&base.join(spec), spec)))
+    resolve_dep_spec_path(spec, deps).or_else(|| {
+        bases
+            .iter()
+            .find_map(|base| file_candidate(&base.join(spec), spec))
+    })
 }
 
 /// The specifier of a *splice-form* import — `import "<spec>"` or
@@ -624,7 +628,10 @@ mod tests {
     fn non_canonical_language_is_usage_error() {
         let res = run(&["--language".into(), "other".into()], Path::new("."));
         assert_eq!(res.code, 2);
-        assert!(res.stderr.contains("custom languages are not yet supported"));
+        assert!(
+            res.stderr
+                .contains("custom languages are not yet supported")
+        );
     }
 
     #[test]
