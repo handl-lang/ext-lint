@@ -378,8 +378,11 @@ fn lint_one(
     // as `hnl run`/`hnl typecheck`.
     let bases = spec_resolution_bases(Path::new(path), None);
     let deps = handl_platform::discover_dependencies(Path::new(path)).unwrap_or_default();
+    // P-013 T-150: dep scopes narrow the splice-import seeding to the
+    // declared surface, matching `hnl run`/`hnl typecheck`.
+    let dep_scopes = handl_platform::discover_dep_scopes(Path::new(path));
     let mut seeded = prelude.clone();
-    seeded.extend(spliced_import_names(src, &bases, &deps));
+    seeded.extend(spliced_import_names(src, &bases, &deps, &dep_scopes));
     let prelude_names: Vec<String> = seeded.iter().cloned().collect();
 
     // Same capability path a third-party consumer uses (ADR-0085 step 4). The
@@ -602,6 +605,7 @@ fn spliced_import_names(
     src: &str,
     bases: &[PathBuf],
     deps: &std::collections::HashMap<String, PathBuf>,
+    scopes: &std::collections::HashMap<String, handl_platform::PkgDepScope>,
 ) -> HashSet<String> {
     let mut names = HashSet::new();
     for line in src.lines() {
@@ -618,7 +622,15 @@ fn spliced_import_names(
         let Ok(mod_src) = std::fs::read_to_string(&path) else {
             continue;
         };
-        names.extend(handl_runtime::module_prep::module_export_names(&mod_src));
+        let mut exported = handl_runtime::module_prep::module_export_names(&mod_src);
+        // P-013 T-150: dep-scoped specifiers seed only declared atoms.
+        if let Some((scope, _, module)) = handl_platform::dep_spec_scope(scopes, &spec) {
+            if !scope.allows_module(&module) {
+                continue;
+            }
+            exported.retain(|n| scope.allows_field(&module, n));
+        }
+        names.extend(exported);
     }
     names
 }
