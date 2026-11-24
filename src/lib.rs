@@ -744,11 +744,11 @@ mod tests {
     fn fix_rewrites_the_file_journaled() {
         let dir = tmpdir("fix");
         let file = dir.join("dirty.hnl");
-        std::fs::write(&file, "x = (1)\n").unwrap();
+        std::fs::write(&file, "x := (1)\n").unwrap();
         let res = run(&["--fix".into(), "dirty.hnl".into()], &dir);
         assert_eq!(res.code, 0, "stderr: {}", res.stderr);
         let fixed = std::fs::read_to_string(&file).unwrap();
-        assert_ne!(fixed, "x = (1)\n", "expected a fix round to apply");
+        assert_ne!(fixed, "x := (1)\n", "expected a fix round to apply");
         assert!(
             dir.join(".handl/codegen/journal").exists()
                 || dir
